@@ -1,0 +1,13 @@
+# ARIA Access API Configuration
+# Copy this file to .env and fill in your actual values
+
+# Base URL for your ARIA Access instance
+ARIA_BASE_URL=https://your-aria-instance.com
+
+# OAuth2 Client Credentials
+ARIA_CLIENT_ID=your-client-id
+ARIA_CLIENT_SECRET=your-client-secret
+
+# User credentials for API access
+ARIA_USERNAME=your-username
+ARIA_PASSWORD=your-password 
