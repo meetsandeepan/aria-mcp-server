@@ -117,8 +117,8 @@ async function getAuthToken(): Promise<string | null> {
   return token;
 }
 
-// Helper function for making authenticated API requests
-async function makeAriaRequest<T>(endpoint: string, params?: Record<string, string>): Promise<T | null> {
+// Helper function for making authenticated API requests with ARIA-specific formatting
+async function makeAriaRequest<T>(endpoint: string, requestData?: any, params?: Record<string, string>): Promise<T | null> {
   const token = await getAuthToken();
   if (!token) {
     throw new Error("Failed to authenticate with ARIA");
@@ -131,18 +131,43 @@ async function makeAriaRequest<T>(endpoint: string, params?: Record<string, stri
     });
   }
 
-  const response = await fetch(url.toString(), {
+  const requestOptions: RequestInit = {
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-  });
+  };
+
+  // If requestData is provided, format it according to ARIA API specifications
+  if (requestData) {
+    requestOptions.method = "POST";
+    requestOptions.body = JSON.stringify(requestData);
+  } else {
+    requestOptions.method = "GET";
+  }
+
+  const response = await fetch(url.toString(), requestOptions);
 
   if (!response.ok) {
     throw new Error(`API request failed: ${response.status} ${response.statusText}`);
   }
 
   return response.json() as T;
+}
+
+// Helper function to format ARIA request data
+function formatAriaRequest(requestType: string, data: Record<string, any>) {
+  const formattedData: Record<string, any> = {
+    "__type": `${requestType}:http://services.varian.com/AriaWebConnect/Link`,
+    "Attributes": null,
+  };
+
+  // Format each field according to ARIA API specification
+  Object.entries(data).forEach(([key, value]) => {
+    formattedData[key] = { "Value": value };
+  });
+
+  return formattedData;
 }
 
 // Create MCP server instance
@@ -226,14 +251,17 @@ server.tool(
     mrn?: string;
   }) => {
     try {
-      const params: Record<string, string> = {};
-      if (patientId) params.patientId = patientId;
-      if (firstName) params.firstName = firstName;
-      if (lastName) params.lastName = lastName;
-      if (dateOfBirth) params.dateOfBirth = dateOfBirth;
-      if (mrn) params.mrn = mrn;
+      // Format request according to GetPatientsRequest
+      const requestData = formatAriaRequest("GetPatientsRequest", {
+        PatientId1: patientId || "",
+        PatientId2: mrn || "",
+        FirstName: firstName || "",
+        LastName: lastName || "",
+        IsMultipleNamesRequired: null,
+        MatchingCriteria: null
+      });
 
-      const patients = await makeAriaRequest<any[]>("/patients", params);
+      const patients = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
       
       if (!patients || patients.length === 0) {
         return {
@@ -247,14 +275,15 @@ server.tool(
       }
 
       const formattedPatients = patients.map(patient => `
-Patient ID: ${patient.patientId}
-Name: ${patient.firstName} ${patient.lastName}
-Date of Birth: ${patient.dateOfBirth}
-MRN: ${patient.mrn}
-Gender: ${patient.gender}
-Address: ${patient.address?.street || ""}, ${patient.address?.city || ""}, ${patient.address?.state || ""} ${patient.address?.zipCode || ""}
-Phone: ${patient.phone || "N/A"}
+Patient ID: ${patient.patientId || patient.PatientId1?.Value || "N/A"}
+Name: ${patient.firstName || patient.FirstName?.Value || ""} ${patient.lastName || patient.LastName?.Value || ""}
+Date of Birth: ${patient.dateOfBirth || patient.Birthdate?.Value || "N/A"}
+MRN: ${patient.mrn || patient.PatientId2?.Value || "N/A"}
+Gender: ${patient.gender || patient.Sex?.Value || "N/A"}
+Address: ${patient.addressLine1 || patient.AddressLine1?.Value || ""}, ${patient.cityOrTownship || patient.CityorTownship?.Value || ""}, ${patient.stateOrProvince || patient.StateOrProvince?.Value || ""} ${patient.postalCode || patient.PostalCode?.Value || ""}
+Phone: ${patient.homePhoneNumber || patient.HomePhoneNumber?.Value || "N/A"}
 Email: ${patient.email || "N/A"}
+Status: ${patient.patientStatus || patient.PatientStatus?.Value || "N/A"}
 ---`).join("\n");
 
       return {
@@ -271,6 +300,242 @@ Email: ${patient.email || "N/A"}
           {
             type: "text",
             text: `Error retrieving patient demographics: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// Create Patient tool
+server.tool(
+  "create-patient",
+  "Create a new patient in ARIA",
+  {
+    firstName: z.string().describe("Patient first name"),
+    lastName: z.string().describe("Patient last name"),
+    middleName: z.string().optional().describe("Patient middle name"),
+    dateOfBirth: z.string().describe("Date of birth (YYYY-MM-DD)"),
+    sex: z.string().describe("Patient sex (Male/Female)"),
+    patientId1: z.string().describe("Primary patient ID"),
+    patientId2: z.string().optional().describe("Secondary patient ID (MRN)"),
+    addressLine1: z.string().optional().describe("Address line 1"),
+    addressLine2: z.string().optional().describe("Address line 2"),
+    cityOrTownship: z.string().optional().describe("City or township"),
+    stateOrProvince: z.string().optional().describe("State or province"),
+    postalCode: z.string().optional().describe("Postal code"),
+    country: z.string().optional().describe("Country"),
+    homePhoneNumber: z.string().optional().describe("Home phone number"),
+    workPhoneNumber: z.string().optional().describe("Work phone number"),
+    maritalStatus: z.string().optional().describe("Marital status"),
+    race: z.string().optional().describe("Race"),
+    religion: z.string().optional().describe("Religion"),
+    occupation: z.string().optional().describe("Occupation"),
+    hospitalName: z.string().optional().describe("Hospital name"),
+    departmentId: z.string().optional().describe("Department ID"),
+  },
+  async ({ 
+    firstName, lastName, middleName, dateOfBirth, sex, patientId1, patientId2,
+    addressLine1, addressLine2, cityOrTownship, stateOrProvince, postalCode, country,
+    homePhoneNumber, workPhoneNumber, maritalStatus, race, religion, occupation,
+    hospitalName, departmentId
+  }: {
+    firstName: string;
+    lastName: string;
+    middleName?: string;
+    dateOfBirth: string;
+    sex: string;
+    patientId1: string;
+    patientId2?: string;
+    addressLine1?: string;
+    addressLine2?: string;
+    cityOrTownship?: string;
+    stateOrProvince?: string;
+    postalCode?: string;
+    country?: string;
+    homePhoneNumber?: string;
+    workPhoneNumber?: string;
+    maritalStatus?: string;
+    race?: string;
+    religion?: string;
+    occupation?: string;
+    hospitalName?: string;
+    departmentId?: string;
+  }) => {
+    try {
+      // Format request according to CreatePatientRequest
+      const requestData = formatAriaRequest("CreatePatientRequest", {
+        FirstName: firstName,
+        LastName: lastName,
+        MiddleName: middleName || "",
+        Birthdate: dateOfBirth,
+        Sex: sex,
+        PatientId1: patientId1,
+        PatientId2: patientId2 || "",
+        AddressLine1: addressLine1 || "",
+        AddressLine2: addressLine2 || "",
+        CityorTownship: cityOrTownship || "",
+        StateOrProvince: stateOrProvince || "",
+        PostalCode: postalCode || "",
+        Country: country || "United States",
+        HomePhoneNumber: homePhoneNumber || "",
+        WorkPhoneNumber: workPhoneNumber || "",
+        MaritalStatus: maritalStatus || "SINGLE",
+        Race: race || "",
+        Religion: religion || "",
+        Occupation: occupation || "",
+        HospitalName: hospitalName || "AA_Hospital_1",
+        DepartmentId: departmentId || "Oncology11",
+        PatientStatus: "New Patient (NP)",
+        PatientState: "Alive",
+        AreaName: "Caller Application Name",
+        IsTimeStampCheckRequired: false,
+        Attributes: null
+      });
+
+      const result = await makeAriaRequest<any>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (result && result.success !== false) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Patient created successfully!\nPatient ID: ${patientId1}\nName: ${firstName} ${lastName}\nDate of Birth: ${dateOfBirth}`,
+            },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Failed to create patient: ${result?.errorMessage || "Unknown error"}`,
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating patient: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// Update Patient tool
+server.tool(
+  "update-patient",
+  "Update an existing patient in ARIA",
+  {
+    patientId1: z.string().describe("Primary patient ID"),
+    firstName: z.string().optional().describe("Patient first name"),
+    lastName: z.string().optional().describe("Patient last name"),
+    middleName: z.string().optional().describe("Patient middle name"),
+    dateOfBirth: z.string().optional().describe("Date of birth (YYYY-MM-DD)"),
+    sex: z.string().optional().describe("Patient sex (Male/Female)"),
+    addressLine1: z.string().optional().describe("Address line 1"),
+    addressLine2: z.string().optional().describe("Address line 2"),
+    cityOrTownship: z.string().optional().describe("City or township"),
+    stateOrProvince: z.string().optional().describe("State or province"),
+    postalCode: z.string().optional().describe("Postal code"),
+    country: z.string().optional().describe("Country"),
+    homePhoneNumber: z.string().optional().describe("Home phone number"),
+    workPhoneNumber: z.string().optional().describe("Work phone number"),
+    maritalStatus: z.string().optional().describe("Marital status"),
+    race: z.string().optional().describe("Race"),
+    religion: z.string().optional().describe("Religion"),
+    occupation: z.string().optional().describe("Occupation"),
+    medicalAlerts: z.string().optional().describe("Medical alerts"),
+    contrastAllergies: z.string().optional().describe("Contrast allergies"),
+  },
+  async ({ 
+    patientId1, firstName, lastName, middleName, dateOfBirth, sex,
+    addressLine1, addressLine2, cityOrTownship, stateOrProvince, postalCode, country,
+    homePhoneNumber, workPhoneNumber, maritalStatus, race, religion, occupation,
+    medicalAlerts, contrastAllergies
+  }: {
+    patientId1: string;
+    firstName?: string;
+    lastName?: string;
+    middleName?: string;
+    dateOfBirth?: string;
+    sex?: string;
+    addressLine1?: string;
+    addressLine2?: string;
+    cityOrTownship?: string;
+    stateOrProvince?: string;
+    postalCode?: string;
+    country?: string;
+    homePhoneNumber?: string;
+    workPhoneNumber?: string;
+    maritalStatus?: string;
+    race?: string;
+    religion?: string;
+    occupation?: string;
+    medicalAlerts?: string;
+    contrastAllergies?: string;
+  }) => {
+    try {
+      // Format request according to UpdatePatientRequest
+      const requestData = formatAriaRequest("UpdatePatientRequest", {
+        PatientId1: patientId1,
+        FirstName: firstName || "",
+        LastName: lastName || "",
+        MiddleName: middleName || "",
+        Birthdate: dateOfBirth || "",
+        Sex: sex || "",
+        AddressLine1: addressLine1 || "",
+        AddressLine2: addressLine2 || "",
+        CityorTownship: cityOrTownship || "",
+        StateOrProvince: stateOrProvince || "",
+        PostalCode: postalCode || "",
+        Country: country || "United States",
+        HomePhoneNumber: homePhoneNumber || "",
+        WorkPhoneNumber: workPhoneNumber || "",
+        MaritalStatus: maritalStatus || "",
+        Race: race || "",
+        Religion: religion || "",
+        Occupation: occupation || "",
+        MedicalAlerts: medicalAlerts || "",
+        ContrastAllergies: contrastAllergies || "",
+        AreaName: "Caller Application Name",
+        IsTimeStampCheckRequired: false,
+        TimeStamp: null,
+        Attributes: null
+      });
+
+      const result = await makeAriaRequest<any>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (result && result.success !== false) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Patient updated successfully!\nPatient ID: ${patientId1}`,
+            },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Failed to update patient: ${result?.errorMessage || "Unknown error"}`,
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error updating patient: ${error instanceof Error ? error.message : "Unknown error"}`,
           },
         ],
       };
@@ -344,6 +609,391 @@ Available: ${resource.isAvailable ? "Yes" : "No"}
   },
 );
 
+// Create Doctor tool
+server.tool(
+  "create-doctor",
+  "Create a new doctor in ARIA",
+  {
+    doctorId: z.string().describe("Doctor ID"),
+    firstName: z.string().describe("Doctor first name"),
+    lastName: z.string().describe("Doctor last name"),
+    middleName: z.string().optional().describe("Doctor middle name"),
+    displayName: z.string().describe("Display name"),
+    honorific: z.string().optional().describe("Honorific (e.g., DR)"),
+    nameSuffix: z.string().optional().describe("Name suffix"),
+    specialty: z.string().describe("Medical specialty"),
+    isOncologist: z.boolean().optional().describe("Is oncologist"),
+    institution: z.string().optional().describe("Institution"),
+    location: z.string().optional().describe("Location"),
+    phoneNumber1: z.string().optional().describe("Primary phone number"),
+    phoneNumber2: z.string().optional().describe("Secondary phone number"),
+    faxNumber: z.string().optional().describe("Fax number"),
+    addressLine1: z.string().optional().describe("Address line 1"),
+    addressLine2: z.string().optional().describe("Address line 2"),
+    addressLine3: z.string().optional().describe("Address line 3"),
+    cityOrTownship: z.string().optional().describe("City or township"),
+    stateOrProvince: z.string().optional().describe("State or province"),
+    postalCode: z.string().optional().describe("Postal code"),
+    country: z.string().optional().describe("Country"),
+    county: z.string().optional().describe("County"),
+    originationDate: z.string().optional().describe("Origination date (YYYY-MM-DD)"),
+    terminationDate: z.string().optional().describe("Termination date (YYYY-MM-DD)"),
+    comment: z.string().optional().describe("Comment"),
+    addressComment: z.string().optional().describe("Address comment"),
+    pocName: z.string().optional().describe("Point of contact name"),
+    billingServiceId: z.string().optional().describe("Billing service ID"),
+  },
+  async ({ 
+    doctorId, firstName, lastName, middleName, displayName, honorific, nameSuffix,
+    specialty, isOncologist, institution, location, phoneNumber1, phoneNumber2, faxNumber,
+    addressLine1, addressLine2, addressLine3, cityOrTownship, stateOrProvince, postalCode,
+    country, county, originationDate, terminationDate, comment, addressComment, pocName, billingServiceId
+  }: {
+    doctorId: string;
+    firstName: string;
+    lastName: string;
+    middleName?: string;
+    displayName: string;
+    honorific?: string;
+    nameSuffix?: string;
+    specialty: string;
+    isOncologist?: boolean;
+    institution?: string;
+    location?: string;
+    phoneNumber1?: string;
+    phoneNumber2?: string;
+    faxNumber?: string;
+    addressLine1?: string;
+    addressLine2?: string;
+    addressLine3?: string;
+    cityOrTownship?: string;
+    stateOrProvince?: string;
+    postalCode?: string;
+    country?: string;
+    county?: string;
+    originationDate?: string;
+    terminationDate?: string;
+    comment?: string;
+    addressComment?: string;
+    pocName?: string;
+    billingServiceId?: string;
+  }) => {
+    try {
+      // Format request according to CreateDoctorRequest
+      const requestData = formatAriaRequest("CreateDoctorRequest", {
+        DoctorId: doctorId,
+        FirstName: firstName,
+        LastName: lastName,
+        MiddleName: middleName || "",
+        DisplayName: displayName,
+        Honorific: honorific || "DR",
+        NameSuffix: nameSuffix || "",
+        Specialty: specialty,
+        IsOncologist: isOncologist || true,
+        Institution: institution || "Oncology",
+        Location: location || "Life Core Hospital",
+        PhoneNumber1: phoneNumber1 || "",
+        PhoneNumber2: phoneNumber2 || "",
+        FaxNumber: faxNumber || "",
+        AddressLine1: addressLine1 || "",
+        AddressLine2: addressLine2 || "",
+        AddressLine3: addressLine3 || "",
+        CityOrTownship: cityOrTownship || "",
+        StateOrProvince: stateOrProvince || "United States",
+        PostalCode: postalCode || "",
+        Country: country || "United States",
+        County: county || "",
+        OriginationDate: originationDate || new Date().toISOString().split('T')[0],
+        TerminationDate: terminationDate || "",
+        Comment: comment || "",
+        AddressComment: addressComment || "",
+        POCName: pocName || "",
+        BillingServiceID: billingServiceId || "",
+        AreaName: "Caller Application Name",
+        Attributes: null
+      });
+
+      const result = await makeAriaRequest<any>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (result && result.success !== false) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Doctor created successfully!\nDoctor ID: ${doctorId}\nName: ${honorific || "DR"} ${firstName} ${lastName}\nSpecialty: ${specialty}`,
+            },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Failed to create doctor: ${result?.errorMessage || "Unknown error"}`,
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating doctor: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// Get Doctor Info tool
+server.tool(
+  "get-doctor-info",
+  "Get doctor information",
+  {
+    doctorId: z.string().optional().describe("Doctor ID"),
+    departmentId: z.string().optional().describe("Department ID"),
+  },
+  async ({ doctorId, departmentId }: {
+    doctorId?: string;
+    departmentId?: string;
+  }) => {
+    try {
+      // Format request according to GetDoctorsInfoRequest
+      const requestData = formatAriaRequest("GetDoctorsInfoRequest", {
+        DoctorId: doctorId || "",
+        DepartmentID: departmentId || "",
+        Attributes: null
+      });
+
+      const doctors = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!doctors || doctors.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No doctors found matching the provided criteria.",
+            },
+          ],
+        };
+      }
+
+      const formattedDoctors = doctors.map(doctor => `
+Doctor ID: ${doctor.doctorId || doctor.DoctorId?.Value || "N/A"}
+Name: ${doctor.honorific || doctor.Honorific?.Value || ""} ${doctor.firstName || doctor.FirstName?.Value || ""} ${doctor.lastName || doctor.LastName?.Value || ""}
+Display Name: ${doctor.displayName || doctor.DisplayName?.Value || "N/A"}
+Specialty: ${doctor.specialty || doctor.Specialty?.Value || "N/A"}
+Institution: ${doctor.institution || doctor.Institution?.Value || "N/A"}
+Location: ${doctor.location || doctor.Location?.Value || "N/A"}
+Phone: ${doctor.phoneNumber1 || doctor.PhoneNumber1?.Value || "N/A"}
+Fax: ${doctor.faxNumber || doctor.FaxNumber?.Value || "N/A"}
+Is Oncologist: ${doctor.isOncologist || doctor.IsOncologist?.Value ? "Yes" : "No"}
+---`).join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${doctors.length} doctor(s):\n${formattedDoctors}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving doctor information: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// Assign Doctor to Patient tool
+server.tool(
+  "assign-doctor-to-patient",
+  "Assign a doctor to a patient",
+  {
+    patientId: z.string().describe("Patient ID"),
+    doctorId: z.string().describe("Doctor ID"),
+    isOncologist: z.boolean().optional().describe("Is oncologist"),
+    isPrimary: z.boolean().optional().describe("Is primary doctor"),
+    comment: z.string().optional().describe("Comment"),
+  },
+  async ({ patientId, doctorId, isOncologist, isPrimary, comment }: {
+    patientId: string;
+    doctorId: string;
+    isOncologist?: boolean;
+    isPrimary?: boolean;
+    comment?: string;
+  }) => {
+    try {
+      // Format request according to AssignDoctorToPatientRequest
+      const requestData = formatAriaRequest("AssignDoctorToPatientRequest", {
+        PatientId: patientId,
+        DoctorId: doctorId,
+        IsOncologist: isOncologist || true,
+        IsPrimary: isPrimary || true,
+        Comment: comment || "",
+        AreaName: "Caller Application Name",
+        Attributes: null
+      });
+
+      const result = await makeAriaRequest<any>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (result && result.success !== false) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Doctor assigned to patient successfully!\nPatient ID: ${patientId}\nDoctor ID: ${doctorId}`,
+            },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Failed to assign doctor to patient: ${result?.errorMessage || "Unknown error"}`,
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error assigning doctor to patient: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// Get Doctors Assigned to Patient tool
+server.tool(
+  "get-doctors-assigned-to-patient",
+  "Get doctors assigned to a patient",
+  {
+    patientId: z.string().describe("Patient ID"),
+    isOncologist: z.boolean().optional().describe("Filter by oncologist status"),
+  },
+  async ({ patientId, isOncologist }: {
+    patientId: string;
+    isOncologist?: boolean;
+  }) => {
+    try {
+      // Format request according to GetDoctorsAssignedToPatientRequest
+      const requestData = formatAriaRequest("GetDoctorsAssignedToPatientRequest", {
+        PatientId: patientId,
+        IsOncologist: isOncologist !== undefined ? isOncologist : null,
+        Attributes: null
+      });
+
+      const doctors = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!doctors || doctors.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No doctors found assigned to this patient.",
+            },
+          ],
+        };
+      }
+
+      const formattedDoctors = doctors.map(doctor => `
+Doctor ID: ${doctor.doctorId || doctor.DoctorId?.Value || "N/A"}
+Name: ${doctor.honorific || doctor.Honorific?.Value || ""} ${doctor.firstName || doctor.FirstName?.Value || ""} ${doctor.lastName || doctor.LastName?.Value || ""}
+Specialty: ${doctor.specialty || doctor.Specialty?.Value || "N/A"}
+Is Oncologist: ${doctor.isOncologist || doctor.IsOncologist?.Value ? "Yes" : "No"}
+Is Primary: ${doctor.isPrimary || doctor.IsPrimary?.Value ? "Yes" : "No"}
+Comment: ${doctor.comment || doctor.Comment?.Value || "N/A"}
+---`).join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${doctors.length} doctor(s) assigned to patient:\n${formattedDoctors}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving assigned doctors: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// Get Machine List tool
+server.tool(
+  "get-machine-list",
+  "Get list of available machines",
+  {},
+  async () => {
+    try {
+      // Format request according to GetMachineListRequest
+      const requestData = formatAriaRequest("GetMachineListRequest", {
+        Attributes: null
+      });
+
+      const machines = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!machines || machines.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No machines found.",
+            },
+          ],
+        };
+      }
+
+      const formattedMachines = machines.map(machine => `
+Machine ID: ${machine.machineId || machine.MachineId?.Value || "N/A"}
+Machine Name: ${machine.machineName || machine.MachineName?.Value || "N/A"}
+Machine Type: ${machine.machineType || machine.MachineType?.Value || "N/A"}
+Status: ${machine.status || machine.Status?.Value || "N/A"}
+Location: ${machine.location || machine.Location?.Value || "N/A"}
+---`).join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${machines.length} machine(s):\n${formattedMachines}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving machine list: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
 // Patient Diagnosis tool
 server.tool(
   "get-patient-diagnosis",
@@ -357,10 +1007,14 @@ server.tool(
     diagnosisId?: string;
   }) => {
     try {
-      const params: Record<string, string> = { patientId };
-      if (diagnosisId) params.diagnosisId = diagnosisId;
+      // Format request according to GetPatientDiagnosesRequest
+      const requestData = formatAriaRequest("GetPatientDiagnosesRequest", {
+        PatientId: patientId,
+        PatientDiagnosisId: diagnosisId || null,
+        Attributes: null
+      });
 
-      const diagnoses = await makeAriaRequest<any[]>("/diagnoses", params);
+      const diagnoses = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
       
       if (!diagnoses || diagnoses.length === 0) {
         return {
@@ -374,13 +1028,16 @@ server.tool(
       }
 
       const formattedDiagnoses = diagnoses.map(diagnosis => `
-Diagnosis ID: ${diagnosis.diagnosisId}
-Primary Site: ${diagnosis.primarySite || "N/A"}
-Histology: ${diagnosis.histology || "N/A"}
-Stage: ${diagnosis.stage || "N/A"}
-Date: ${diagnosis.diagnosisDate || "N/A"}
-Status: ${diagnosis.status || "N/A"}
-Notes: ${diagnosis.notes || "N/A"}
+Diagnosis ID: ${diagnosis.patientDiagnosisId || diagnosis.PatientDiagnosisId?.Value || "N/A"}
+Primary Site: ${diagnosis.diagnosisSiteId || diagnosis.DiagnosisSiteId?.Value || "N/A"}
+Histology: ${diagnosis.behaviorCode || diagnosis.BehaviorCode?.Value || "N/A"}
+Stage: ${diagnosis.staging?.[0]?.cancerStageCode || diagnosis.Staging?.[0]?.CancerStageCode?.Value || "N/A"}
+Date: ${diagnosis.diagnosisDate || diagnosis.DiagnosisDate?.Value || "N/A"}
+Status: ${diagnosis.diagnosisStatusId || diagnosis.DiagnosisStatusId?.Value || "N/A"}
+Clinical Description: ${diagnosis.clinicalDescription || diagnosis.ClinicalDescription?.Value || "N/A"}
+Diagnosis Code: ${diagnosis.diagnosisCode || diagnosis.DiagnosisCode?.Value || "N/A"}
+Is Confirmed: ${diagnosis.isConfirmed || diagnosis.IsConfirmed?.Value ? "Yes" : "No"}
+Is Historic: ${diagnosis.isHistoric || diagnosis.IsHistoric?.Value ? "Yes" : "No"}
 ---`).join("\n");
 
       return {
@@ -397,6 +1054,236 @@ Notes: ${diagnosis.notes || "N/A"}
           {
             type: "text",
             text: `Error retrieving patient diagnosis: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// Create Patient Diagnosis tool
+server.tool(
+  "create-patient-diagnosis",
+  "Create a new patient diagnosis in ARIA",
+  {
+    patientId: z.string().describe("Patient ID"),
+    diagnosisCode: z.string().describe("Diagnosis code (e.g., 140.1)"),
+    clinicalDescription: z.string().describe("Clinical description"),
+    diagnosisDate: z.string().describe("Diagnosis date (YYYY-MM-DD)"),
+    diagnosisSiteId: z.number().describe("Diagnosis site ID"),
+    behaviorCode: z.string().optional().describe("Behavior code (e.g., 0)"),
+    diagnosisScheme: z.number().optional().describe("Diagnosis scheme (e.g., 19)"),
+    diagnosisMethodId: z.number().optional().describe("Diagnosis method ID"),
+    diagnosisStatusId: z.number().optional().describe("Diagnosis status ID"),
+    ranking: z.number().optional().describe("Ranking"),
+    isConfirmed: z.boolean().optional().describe("Is confirmed"),
+    isHistoric: z.boolean().optional().describe("Is historic"),
+    isAdverseEvent: z.boolean().optional().describe("Is adverse event"),
+    diagnosisDetails: z.string().optional().describe("Diagnosis details"),
+    diagnosisMethodDescription: z.string().optional().describe("Diagnosis method description"),
+    areaName: z.string().optional().describe("Area name"),
+  },
+  async ({ 
+    patientId, diagnosisCode, clinicalDescription, diagnosisDate, diagnosisSiteId,
+    behaviorCode, diagnosisScheme, diagnosisMethodId, diagnosisStatusId, ranking,
+    isConfirmed, isHistoric, isAdverseEvent, diagnosisDetails, diagnosisMethodDescription, areaName
+  }: {
+    patientId: string;
+    diagnosisCode: string;
+    clinicalDescription: string;
+    diagnosisDate: string;
+    diagnosisSiteId: number;
+    behaviorCode?: string;
+    diagnosisScheme?: number;
+    diagnosisMethodId?: number;
+    diagnosisStatusId?: number;
+    ranking?: number;
+    isConfirmed?: boolean;
+    isHistoric?: boolean;
+    isAdverseEvent?: boolean;
+    diagnosisDetails?: string;
+    diagnosisMethodDescription?: string;
+    areaName?: string;
+  }) => {
+    try {
+      // Format request according to CreatePatientDiagnosisRequest
+      const requestData = formatAriaRequest("CreatePatientDiagnosisRequest", {
+        PatientDiagnosis: {
+          PatientId: { Value: patientId },
+          DiagnosisCode: { Value: diagnosisCode },
+          ClinicalDescription: { Value: clinicalDescription },
+          DiagnosisCodeDescription: { Value: clinicalDescription },
+          DiagnosisDate: { Value: diagnosisDate },
+          DiagnosisSiteId: { Value: diagnosisSiteId },
+          BehaviorCode: { Value: behaviorCode || "0" },
+          DiagnosisScheme: { Value: diagnosisScheme || 19 },
+          DiagnosisMethodId: { Value: diagnosisMethodId || 1 },
+          DiagnosisStatusId: { Value: diagnosisStatusId || 6 },
+          DiagnosisStatusDate: { Value: diagnosisDate },
+          Ranking: { Value: ranking || 1 },
+          IsConfirmed: { Value: isConfirmed || false },
+          IsHistoric: { Value: isHistoric || false },
+          IsAdverseEvent: { Value: isAdverseEvent || false },
+          IsValidEntry: { Value: true },
+          DiagnosisDetails: { Value: diagnosisDetails || "DiagnosisDetails" },
+          DiagnosisMethodDescription: { Value: diagnosisMethodDescription || "DiagnosisMethodDescription" },
+          AreaName: { Value: areaName || "CreateDiag" },
+          EvolvedDate: { Value: diagnosisDate },
+          EvolvedFromPatientDiagnosisId: { Value: 0 },
+          PrimaryPatientDiagnosisId: { Value: 0 },
+          PatientDiagnosisId: { Value: null },
+          IsICDCodeReported: { Value: false },
+          IsMetastasized: { Value: null },
+          PrimaryCancerSiteId: { Value: null },
+          ErrorReasonDescription: { Value: "The cancer code for this diagnosis was Unchanged." },
+          Staging: []
+        },
+        Attributes: null
+      });
+
+      const result = await makeAriaRequest<any>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (result && result.success !== false) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Patient diagnosis created successfully!\nPatient ID: ${patientId}\nDiagnosis Code: ${diagnosisCode}\nClinical Description: ${clinicalDescription}`,
+            },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Failed to create patient diagnosis: ${result?.errorMessage || "Unknown error"}`,
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating patient diagnosis: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// Update Patient Diagnosis tool
+server.tool(
+  "update-patient-diagnosis",
+  "Update an existing patient diagnosis in ARIA",
+  {
+    patientDiagnosisId: z.number().describe("Patient diagnosis ID"),
+    patientId: z.string().describe("Patient ID"),
+    diagnosisCode: z.string().optional().describe("Diagnosis code (e.g., 140.1)"),
+    clinicalDescription: z.string().optional().describe("Clinical description"),
+    diagnosisDate: z.string().optional().describe("Diagnosis date (YYYY-MM-DD)"),
+    diagnosisSiteId: z.number().optional().describe("Diagnosis site ID"),
+    behaviorCode: z.string().optional().describe("Behavior code (e.g., 0)"),
+    diagnosisScheme: z.number().optional().describe("Diagnosis scheme (e.g., 19)"),
+    diagnosisMethodId: z.number().optional().describe("Diagnosis method ID"),
+    diagnosisStatusId: z.number().optional().describe("Diagnosis status ID"),
+    ranking: z.number().optional().describe("Ranking"),
+    isConfirmed: z.boolean().optional().describe("Is confirmed"),
+    isHistoric: z.boolean().optional().describe("Is historic"),
+    isAdverseEvent: z.boolean().optional().describe("Is adverse event"),
+    diagnosisDetails: z.string().optional().describe("Diagnosis details"),
+    diagnosisMethodDescription: z.string().optional().describe("Diagnosis method description"),
+    areaName: z.string().optional().describe("Area name"),
+  },
+  async ({ 
+    patientDiagnosisId, patientId, diagnosisCode, clinicalDescription, diagnosisDate, diagnosisSiteId,
+    behaviorCode, diagnosisScheme, diagnosisMethodId, diagnosisStatusId, ranking,
+    isConfirmed, isHistoric, isAdverseEvent, diagnosisDetails, diagnosisMethodDescription, areaName
+  }: {
+    patientDiagnosisId: number;
+    patientId: string;
+    diagnosisCode?: string;
+    clinicalDescription?: string;
+    diagnosisDate?: string;
+    diagnosisSiteId?: number;
+    behaviorCode?: string;
+    diagnosisScheme?: number;
+    diagnosisMethodId?: number;
+    diagnosisStatusId?: number;
+    ranking?: number;
+    isConfirmed?: boolean;
+    isHistoric?: boolean;
+    isAdverseEvent?: boolean;
+    diagnosisDetails?: string;
+    diagnosisMethodDescription?: string;
+    areaName?: string;
+  }) => {
+    try {
+      // Format request according to UpdatePatientDiagnosisRequest
+      const requestData = formatAriaRequest("UpdatePatientDiagnosisRequest", {
+        PatientDiagnosis: {
+          PatientDiagnosisId: { Value: patientDiagnosisId },
+          PatientId: { Value: patientId },
+          DiagnosisCode: { Value: diagnosisCode || "" },
+          ClinicalDescription: { Value: clinicalDescription || "" },
+          DiagnosisCodeDescription: { Value: clinicalDescription || "" },
+          DiagnosisDate: { Value: diagnosisDate || "" },
+          DiagnosisSiteId: { Value: diagnosisSiteId || 0 },
+          BehaviorCode: { Value: behaviorCode || null },
+          DiagnosisScheme: { Value: diagnosisScheme || 19 },
+          DiagnosisMethodId: { Value: diagnosisMethodId || 1 },
+          DiagnosisStatusId: { Value: diagnosisStatusId || 6 },
+          DiagnosisStatusDate: { Value: diagnosisDate || "" },
+          Ranking: { Value: ranking || 1 },
+          IsConfirmed: { Value: isConfirmed || false },
+          IsHistoric: { Value: isHistoric || false },
+          IsAdverseEvent: { Value: isAdverseEvent || false },
+          IsValidEntry: { Value: true },
+          DiagnosisDetails: { Value: diagnosisDetails || "DiagnosisDetails" },
+          DiagnosisMethodDescription: { Value: diagnosisMethodDescription || "DiagnosisMethodDescription" },
+          AreaName: { Value: areaName || "CreateDiag" },
+          EvolvedDate: { Value: diagnosisDate || "" },
+          EvolvedFromPatientDiagnosisId: { Value: 0 },
+          PrimaryPatientDiagnosisId: { Value: 0 },
+          IsICDCodeReported: { Value: false },
+          IsMetastasized: { Value: null },
+          PrimaryCancerSiteId: { Value: null },
+          ErrorReasonDescription: { Value: "The cancer code for this diagnosis was Unchanged." },
+          Staging: []
+        },
+        Attributes: null
+      });
+
+      const result = await makeAriaRequest<any>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (result && result.success !== false) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Patient diagnosis updated successfully!\nPatient Diagnosis ID: ${patientDiagnosisId}\nPatient ID: ${patientId}`,
+            },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Failed to update patient diagnosis: ${result?.errorMessage || "Unknown error"}`,
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error updating patient diagnosis: ${error instanceof Error ? error.message : "Unknown error"}`,
           },
         ],
       };
@@ -469,6 +1356,280 @@ Notes: ${appointment.notes || "N/A"}
   },
 );
 
+// Create Machine Appointment tool
+server.tool(
+  "create-machine-appointment",
+  "Create a new machine appointment in ARIA",
+  {
+    patientId: z.string().describe("Patient ID"),
+    machineId: z.string().describe("Machine ID"),
+    startDateTime: z.string().describe("Start date and time (ISO format)"),
+    endDateTime: z.string().describe("End date and time (ISO format)"),
+    activityName: z.string().describe("Activity name (e.g., Daily Treatment)"),
+    activityStatus: z.string().optional().describe("Activity status (e.g., Open)"),
+    activityNote: z.string().optional().describe("Activity note"),
+    departmentName: z.string().optional().describe("Department name"),
+    hospitalName: z.string().optional().describe("Hospital name"),
+    resourceType: z.string().optional().describe("Resource type (e.g., Machine)"),
+    areaName: z.string().optional().describe("Area name"),
+    associatedResources: z.array(z.object({
+      resourceId: z.string(),
+      resourceType: z.string()
+    })).optional().describe("Associated resources"),
+  },
+  async ({ 
+    patientId, machineId, startDateTime, endDateTime, activityName, activityStatus,
+    activityNote, departmentName, hospitalName, resourceType, areaName, associatedResources
+  }: {
+    patientId: string;
+    machineId: string;
+    startDateTime: string;
+    endDateTime: string;
+    activityName: string;
+    activityStatus?: string;
+    activityNote?: string;
+    departmentName?: string;
+    hospitalName?: string;
+    resourceType?: string;
+    areaName?: string;
+    associatedResources?: Array<{ resourceId: string; resourceType: string }>;
+  }) => {
+    try {
+      // Format request according to CreateMachineAppointmentRequest
+      const requestData = formatAriaRequest("CreateMachineAppointmentRequest", {
+        PatientId: { Value: patientId },
+        MachineId: { Value: machineId },
+        StartDateTime: { Value: startDateTime },
+        EndDateTime: { Value: endDateTime },
+        ActivityName: { Value: activityName },
+        ActivityStatus: { Value: activityStatus || "Open" },
+        ActivityNote: { Value: activityNote || "Note" },
+        DepartmentName: { Value: departmentName || "Oncology11" },
+        HospitalName: { Value: hospitalName || "AA_Hospital_1" },
+        ResourceType: { Value: resourceType || "Machine" },
+        AreaName: { Value: areaName || "AreaName" },
+        AssociatedResources: associatedResources ? associatedResources.map(resource => ({
+          ResourceID: { Value: resource.resourceId },
+          ResourceType: { Value: resource.resourceType }
+        })) : [],
+        Attributes: null
+      });
+
+      const result = await makeAriaRequest<any>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (result && result.success !== false) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Machine appointment created successfully!\nPatient ID: ${patientId}\nMachine ID: ${machineId}\nActivity: ${activityName}\nStart: ${startDateTime}\nEnd: ${endDateTime}`,
+            },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Failed to create machine appointment: ${result?.errorMessage || "Unknown error"}`,
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating machine appointment: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// Update Machine Appointment tool
+server.tool(
+  "update-machine-appointment",
+  "Update an existing machine appointment in ARIA",
+  {
+    patientId: z.string().describe("Patient ID"),
+    machineId: z.string().describe("Machine ID"),
+    startDateTime: z.string().describe("Current start date and time (ISO format)"),
+    endDateTime: z.string().describe("Current end date and time (ISO format)"),
+    newStartDateTime: z.string().describe("New start date and time (ISO format)"),
+    newEndDateTime: z.string().describe("New end date and time (ISO format)"),
+    activityName: z.string().describe("Activity name (e.g., Daily Treatment)"),
+    activityStatus: z.string().optional().describe("Activity status (e.g., Open)"),
+    activityNote: z.string().optional().describe("Activity note"),
+    departmentName: z.string().optional().describe("Department name"),
+    hospitalName: z.string().optional().describe("Hospital name"),
+    resourceType: z.string().optional().describe("Resource type (e.g., Machine)"),
+    areaName: z.string().optional().describe("Area name"),
+    associatedResources: z.array(z.object({
+      resourceId: z.string(),
+      resourceType: z.string()
+    })).optional().describe("Associated resources"),
+    isTimeStampCheckRequired: z.boolean().optional().describe("Is timestamp check required"),
+    timeStamp: z.string().optional().describe("Timestamp"),
+  },
+  async ({ 
+    patientId, machineId, startDateTime, endDateTime, newStartDateTime, newEndDateTime,
+    activityName, activityStatus, activityNote, departmentName, hospitalName, resourceType,
+    areaName, associatedResources, isTimeStampCheckRequired, timeStamp
+  }: {
+    patientId: string;
+    machineId: string;
+    startDateTime: string;
+    endDateTime: string;
+    newStartDateTime: string;
+    newEndDateTime: string;
+    activityName: string;
+    activityStatus?: string;
+    activityNote?: string;
+    departmentName?: string;
+    hospitalName?: string;
+    resourceType?: string;
+    areaName?: string;
+    associatedResources?: Array<{ resourceId: string; resourceType: string }>;
+    isTimeStampCheckRequired?: boolean;
+    timeStamp?: string;
+  }) => {
+    try {
+      // Format request according to UpdateMachineAppointmentRequest
+      const requestData = formatAriaRequest("UpdateMachineAppointmentRequest", {
+        PatientId: { Value: patientId },
+        MachineId: { Value: machineId },
+        StartDateTime: { Value: startDateTime },
+        EndDateTime: { Value: endDateTime },
+        NewStartDateTime: { Value: newStartDateTime },
+        NewEndDateTime: { Value: newEndDateTime },
+        ActivityName: { Value: activityName },
+        ActivityStatus: { Value: activityStatus || "Open" },
+        ActivityNote: { Value: activityNote || "Note" },
+        DepartmentName: { Value: departmentName || "Oncology11" },
+        HospitalName: { Value: hospitalName || "AA_Hospital_1" },
+        ResourceType: { Value: resourceType || "Machine" },
+        AreaName: { Value: areaName || "Caller Application Name" },
+        AssociatedResources: associatedResources ? associatedResources.map(resource => ({
+          ResourceID: { Value: resource.resourceId },
+          ResourceType: { Value: resource.resourceType }
+        })) : [],
+        IsTimeStampCheckRequired: { Value: isTimeStampCheckRequired || false },
+        TimeStamp: { Value: timeStamp || null },
+        Attributes: null
+      });
+
+      const result = await makeAriaRequest<any>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (result && result.success !== false) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Machine appointment updated successfully!\nPatient ID: ${patientId}\nMachine ID: ${machineId}\nNew Start: ${newStartDateTime}\nNew End: ${newEndDateTime}`,
+            },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Failed to update machine appointment: ${result?.errorMessage || "Unknown error"}`,
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error updating machine appointment: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// Get Machine Appointments tool
+server.tool(
+  "get-machine-appointments",
+  "Get machine appointments for a specific time range",
+  {
+    machineId: z.string().describe("Machine ID"),
+    startDateTime: z.string().describe("Start date and time (ISO format)"),
+    endDateTime: z.string().describe("End date and time (ISO format)"),
+    departmentName: z.string().optional().describe("Department name"),
+    hospitalName: z.string().optional().describe("Hospital name"),
+  },
+  async ({ machineId, startDateTime, endDateTime, departmentName, hospitalName }: {
+    machineId: string;
+    startDateTime: string;
+    endDateTime: string;
+    departmentName?: string;
+    hospitalName?: string;
+  }) => {
+    try {
+      // Format request according to GetMachineAppointmentsRequest
+      const requestData = formatAriaRequest("GetMachineAppointmentsRequest", {
+        MachineId: { Value: machineId },
+        StartDateTime: { Value: startDateTime },
+        EndDateTime: { Value: endDateTime },
+        DepartmentName: { Value: departmentName || "Oncology11" },
+        HospitalName: { Value: hospitalName || "AA_Hospital_1" },
+        Attributes: null
+      });
+
+      const appointments = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!appointments || appointments.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No machine appointments found for the specified time range.",
+            },
+          ],
+        };
+      }
+
+      const formattedAppointments = appointments.map(appointment => `
+Appointment ID: ${appointment.appointmentId || appointment.AppointmentId?.Value || "N/A"}
+Patient ID: ${appointment.patientId || appointment.PatientId?.Value || "N/A"}
+Machine ID: ${appointment.machineId || appointment.MachineId?.Value || "N/A"}
+Start Time: ${appointment.startDateTime || appointment.StartDateTime?.Value || "N/A"}
+End Time: ${appointment.endDateTime || appointment.EndDateTime?.Value || "N/A"}
+Activity Name: ${appointment.activityName || appointment.ActivityName?.Value || "N/A"}
+Activity Status: ${appointment.activityStatus || appointment.ActivityStatus?.Value || "N/A"}
+Activity Note: ${appointment.activityNote || appointment.ActivityNote?.Value || "N/A"}
+Department: ${appointment.departmentName || appointment.DepartmentName?.Value || "N/A"}
+---`).join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${appointments.length} machine appointment(s):\n${formattedAppointments}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving machine appointments: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
 // Billing Data tool
 server.tool(
   "get-billing-data",
@@ -532,23 +1693,157 @@ Description: ${bill.procedureDescription || "N/A"}
   },
 );
 
+// Get Billing Info tool
+server.tool(
+  "get-billing-info",
+  "Get billing information for a date range",
+  {
+    startDate: z.string().describe("Start date (YYYY-MM-DD)"),
+    endDate: z.string().describe("End date (YYYY-MM-DD)"),
+    hospitalName: z.string().optional().describe("Hospital name"),
+    returnAllCharges: z.boolean().optional().describe("Return all charges"),
+    sortMode: z.number().optional().describe("Sort mode (e.g., 2)"),
+  },
+  async ({ startDate, endDate, hospitalName, returnAllCharges, sortMode }: {
+    startDate: string;
+    endDate: string;
+    hospitalName?: string;
+    returnAllCharges?: boolean;
+    sortMode?: number;
+  }) => {
+    try {
+      // Format request according to GetBillingInfoRequest
+      const requestData = formatAriaRequest("GetBillingInfoRequest", {
+        StartDate: { Value: startDate },
+        EndDate: { Value: endDate },
+        HospitalName: { Value: hospitalName || "AA_Hospital_1" },
+        ReturnAllCharges: { Value: returnAllCharges || true },
+        SortMode: { Value: sortMode || 2 },
+        Attributes: null
+      });
+
+      const billingInfo = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!billingInfo || billingInfo.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No billing information found for the specified date range.",
+            },
+          ],
+        };
+      }
+
+      const formattedBillingInfo = billingInfo.map(bill => `
+Billing ID: ${bill.billingId || bill.BillingId?.Value || "N/A"}
+Patient ID: ${bill.patientId || bill.PatientId?.Value || "N/A"}
+Patient Name: ${bill.patientName || bill.PatientName?.Value || "N/A"}
+Service Date: ${bill.serviceDate || bill.ServiceDate?.Value || "N/A"}
+Charge Amount: $${bill.chargeAmount || bill.ChargeAmount?.Value || "0.00"}
+Procedure Code: ${bill.procedureCode || bill.ProcedureCode?.Value || "N/A"}
+Procedure Description: ${bill.procedureDescription || bill.ProcedureDescription?.Value || "N/A"}
+Insurance Provider: ${bill.insuranceProvider || bill.InsuranceProvider?.Value || "N/A"}
+Billing Status: ${bill.billingStatus || bill.BillingStatus?.Value || "N/A"}
+Department: ${bill.department || bill.Department?.Value || "N/A"}
+Provider: ${bill.provider || bill.Provider?.Value || "N/A"}
+---`).join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${billingInfo.length} billing record(s):\n${formattedBillingInfo}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving billing information: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// Acknowledge Billing Info Received tool
+server.tool(
+  "acknowledge-billing-info-received",
+  "Acknowledge that billing information has been received",
+  {
+    exportAcknowledgeDate: z.string().describe("Export acknowledge date (YYYY-MM-DD)"),
+    tsaSerialNumber: z.number().describe("TSA Serial Number"),
+  },
+  async ({ exportAcknowledgeDate, tsaSerialNumber }: {
+    exportAcknowledgeDate: string;
+    tsaSerialNumber: number;
+  }) => {
+    try {
+      // Format request according to AcknowledgeBillingInfoReceivedRequest
+      const requestData = formatAriaRequest("AcknowledgeBillingInfoReceivedRequest", {
+        ExportAcknowledgeDate: { Value: exportAcknowledgeDate },
+        TSASerialNumber: { Value: tsaSerialNumber },
+        Attributes: null
+      });
+
+      const result = await makeAriaRequest<any>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (result && result.success !== false) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Billing information acknowledgment successful!\nExport Acknowledge Date: ${exportAcknowledgeDate}\nTSA Serial Number: ${tsaSerialNumber}`,
+            },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Failed to acknowledge billing information: ${result?.errorMessage || "Unknown error"}`,
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error acknowledging billing information: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
 // Radiation Therapy Data tools
 server.tool(
   "get-radiation-courses",
-  "Get radiation therapy courses for a patient",
+  "Get radiation therapy courses and plan setups for a patient",
   {
     patientId: z.string().describe("Patient ID"),
-    courseId: z.string().optional().describe("Course ID"),
+    treatmentType: z.string().optional().describe("Treatment Type (e.g., Linac)"),
   },
-  async ({ patientId, courseId }: {
+  async ({ patientId, treatmentType }: {
     patientId: string;
-    courseId?: string;
+    treatmentType?: string;
   }) => {
     try {
-      const params: Record<string, string> = { patientId };
-      if (courseId) params.courseId = courseId;
+      // Format request according to GetPatientCoursesAndPlanSetupsRequest
+      const requestData = formatAriaRequest("GetPatientCoursesAndPlanSetupsRequest", {
+        PatientId: patientId,
+        TreatmentType: treatmentType || "Linac"
+      });
 
-      const courses = await makeAriaRequest<any[]>("/radiation/courses", params);
+      const courses = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
       
       if (!courses || courses.length === 0) {
         return {
@@ -562,15 +1857,16 @@ server.tool(
       }
 
       const formattedCourses = courses.map(course => `
-Course ID: ${course.courseId}
-Course Name: ${course.courseName}
-Start Date: ${course.startDate}
-End Date: ${course.endDate}
-Status: ${course.status}
-Total Fractions: ${course.totalFractions}
-Completed Fractions: ${course.completedFractions}
-Prescription Dose: ${course.prescriptionDose} ${course.doseUnit}
-Target Volume: ${course.targetVolume || "N/A"}
+Course ID: ${course.courseId || course.CourseId?.Value || "N/A"}
+Course Name: ${course.courseName || course.CourseName?.Value || "N/A"}
+Start Date: ${course.startDate || course.StartDate?.Value || "N/A"}
+End Date: ${course.endDate || course.EndDate?.Value || "N/A"}
+Status: ${course.status || course.Status?.Value || "N/A"}
+Total Fractions: ${course.totalFractions || course.TotalFractions?.Value || "N/A"}
+Completed Fractions: ${course.completedFractions || course.CompletedFractions?.Value || "N/A"}
+Prescription Dose: ${course.prescriptionDose || course.PrescriptionDose?.Value || "N/A"} ${course.doseUnit || course.DoseUnit?.Value || ""}
+Target Volume: ${course.targetVolume || course.TargetVolume?.Value || "N/A"}
+Treatment Type: ${course.treatmentType || course.TreatmentType?.Value || "N/A"}
 ---`).join("\n");
 
       return {
@@ -596,23 +1892,26 @@ Target Volume: ${course.targetVolume || "N/A"}
 
 server.tool(
   "get-treatment-plans",
-  "Get radiation treatment plans",
+  "Get radiation treatment plans for a patient",
   {
     patientId: z.string().describe("Patient ID"),
     courseId: z.string().optional().describe("Course ID"),
-    planId: z.string().optional().describe("Plan ID"),
+    planSetupId: z.string().optional().describe("Plan Setup ID"),
   },
-  async ({ patientId, courseId, planId }: {
+  async ({ patientId, courseId, planSetupId }: {
     patientId: string;
     courseId?: string;
-    planId?: string;
+    planSetupId?: string;
   }) => {
     try {
-      const params: Record<string, string> = { patientId };
-      if (courseId) params.courseId = courseId;
-      if (planId) params.planId = planId;
+      // Format request according to GetPatientPlansRequest
+      const requestData = formatAriaRequest("GetPatientPlansRequest", {
+        PatientId: patientId,
+        CourseId: courseId || "",
+        PlanSetupId: planSetupId || ""
+      });
 
-      const plans = await makeAriaRequest<any[]>("/radiation/plans", params);
+      const plans = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
       
       if (!plans || plans.length === 0) {
         return {
@@ -626,16 +1925,17 @@ server.tool(
       }
 
       const formattedPlans = plans.map(plan => `
-Plan ID: ${plan.planId}
-Plan Name: ${plan.planName}
-Course ID: ${plan.courseId}
-Plan Type: ${plan.planType}
-Status: ${plan.status}
-Created Date: ${plan.createdDate}
-Approved Date: ${plan.approvedDate || "Not approved"}
-Total Dose: ${plan.totalDose} ${plan.doseUnit}
-Fractions: ${plan.fractions}
-Beam Count: ${plan.beamCount || "N/A"}
+Plan ID: ${plan.planId || plan.PlanId?.Value || "N/A"}
+Plan Name: ${plan.planName || plan.PlanName?.Value || "N/A"}
+Course ID: ${plan.courseId || plan.CourseId?.Value || "N/A"}
+Plan Type: ${plan.planType || plan.PlanType?.Value || "N/A"}
+Status: ${plan.status || plan.Status?.Value || "N/A"}
+Created Date: ${plan.createdDate || plan.CreatedDate?.Value || "N/A"}
+Approved Date: ${plan.approvedDate || plan.ApprovedDate?.Value || "Not approved"}
+Total Dose: ${plan.totalDose || plan.TotalDose?.Value || "N/A"} ${plan.doseUnit || plan.DoseUnit?.Value || ""}
+Fractions: ${plan.fractions || plan.Fractions?.Value || "N/A"}
+Beam Count: ${plan.beamCount || plan.BeamCount?.Value || "N/A"}
+Plan Setup ID: ${plan.planSetupId || plan.PlanSetupId?.Value || "N/A"}
 ---`).join("\n");
 
       return {
@@ -660,58 +1960,56 @@ Beam Count: ${plan.beamCount || "N/A"}
 );
 
 server.tool(
-  "get-treatments",
-  "Get radiation treatment sessions",
+  "get-plan-setups",
+  "Get radiation treatment plan setups for a patient",
   {
     patientId: z.string().describe("Patient ID"),
     courseId: z.string().optional().describe("Course ID"),
-    planId: z.string().optional().describe("Plan ID"),
-    treatmentId: z.string().optional().describe("Treatment ID"),
+    planSetupId: z.string().optional().describe("Plan Setup ID"),
   },
-  async ({ patientId, courseId, planId, treatmentId }: {
+  async ({ patientId, courseId, planSetupId }: {
     patientId: string;
     courseId?: string;
-    planId?: string;
-    treatmentId?: string;
+    planSetupId?: string;
   }) => {
     try {
-      const params: Record<string, string> = { patientId };
-      if (courseId) params.courseId = courseId;
-      if (planId) params.planId = planId;
-      if (treatmentId) params.treatmentId = treatmentId;
+      // Format request according to GetPatientPlanSetupsRequest
+      const requestData = formatAriaRequest("GetPatientPlanSetupsRequest", {
+        PatientId: patientId,
+        CourseId: courseId || "",
+        PlanSetUpId: planSetupId || ""
+      });
 
-      const treatments = await makeAriaRequest<any[]>("/radiation/treatments", params);
+      const planSetups = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
       
-      if (!treatments || treatments.length === 0) {
+      if (!planSetups || planSetups.length === 0) {
         return {
           content: [
             {
               type: "text",
-              text: "No treatments found for this patient.",
+              text: "No plan setups found for this patient.",
             },
           ],
         };
       }
 
-      const formattedTreatments = treatments.map(treatment => `
-Treatment ID: ${treatment.treatmentId}
-Treatment Date: ${treatment.treatmentDate}
-Fraction Number: ${treatment.fractionNumber}
-Course ID: ${treatment.courseId}
-Plan ID: ${treatment.planId}
-Status: ${treatment.status}
-Machine: ${treatment.machineName || "N/A"}
-Technologist: ${treatment.technologistName || "N/A"}
-Dose Delivered: ${treatment.doseDelivered} ${treatment.doseUnit}
-Treatment Time: ${treatment.treatmentTime || "N/A"}
-Notes: ${treatment.notes || "N/A"}
+      const formattedPlanSetups = planSetups.map(setup => `
+Plan Setup ID: ${setup.planSetupId || setup.PlanSetUpId?.Value || "N/A"}
+Plan Setup Name: ${setup.planSetupName || setup.PlanSetupName?.Value || "N/A"}
+Course ID: ${setup.courseId || setup.CourseId?.Value || "N/A"}
+Patient ID: ${setup.patientId || setup.PatientId?.Value || "N/A"}
+Status: ${setup.status || setup.Status?.Value || "N/A"}
+Created Date: ${setup.createdDate || setup.CreatedDate?.Value || "N/A"}
+Approved Date: ${setup.approvedDate || setup.ApprovedDate?.Value || "Not approved"}
+Total Dose: ${setup.totalDose || setup.TotalDose?.Value || "N/A"} ${setup.doseUnit || setup.DoseUnit?.Value || ""}
+Fractions: ${setup.fractions || setup.Fractions?.Value || "N/A"}
 ---`).join("\n");
 
       return {
         content: [
           {
             type: "text",
-            text: `Found ${treatments.length} treatment session(s):\n${formattedTreatments}`,
+            text: `Found ${planSetups.length} plan setup(s):\n${formattedPlanSetups}`,
           },
         ],
       };
@@ -720,7 +2018,580 @@ Notes: ${treatment.notes || "N/A"}
         content: [
           {
             type: "text",
-            text: `Error retrieving treatments: ${error instanceof Error ? error.message : "Unknown error"}`,
+            text: `Error retrieving plan setups: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
+  "get-plan-tx-fields",
+  "Get radiation treatment plan treatment fields",
+  {
+    patientId: z.string().describe("Patient ID"),
+    courseId: z.string().describe("Course ID"),
+    planId: z.string().describe("Plan ID"),
+    scale: z.string().optional().describe("Scale (e.g., IEC)"),
+  },
+  async ({ patientId, courseId, planId, scale }: {
+    patientId: string;
+    courseId: string;
+    planId: string;
+    scale?: string;
+  }) => {
+    try {
+      // Format request according to GetPatientPlanTxFieldsRequest
+      const requestData = formatAriaRequest("GetPatientPlanTxFieldsRequest", {
+        PatientId: patientId,
+        CourseId: courseId,
+        PlanId: planId,
+        Scale: scale || "IEC"
+      });
+
+      const txFields = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!txFields || txFields.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No treatment fields found for this plan.",
+            },
+          ],
+        };
+      }
+
+      const formattedTxFields = txFields.map(field => `
+Field ID: ${field.fieldId || field.FieldId?.Value || "N/A"}
+Field Name: ${field.fieldName || field.FieldName?.Value || "N/A"}
+Plan ID: ${field.planId || field.PlanId?.Value || "N/A"}
+Course ID: ${field.courseId || field.CourseId?.Value || "N/A"}
+Field Type: ${field.fieldType || field.FieldType?.Value || "N/A"}
+Gantry Angle: ${field.gantryAngle || field.GantryAngle?.Value || "N/A"}
+Collimator Angle: ${field.collimatorAngle || field.CollimatorAngle?.Value || "N/A"}
+Couch Angle: ${field.couchAngle || field.CouchAngle?.Value || "N/A"}
+Dose: ${field.dose || field.Dose?.Value || "N/A"} ${field.doseUnit || field.DoseUnit?.Value || ""}
+MU: ${field.mu || field.MU?.Value || "N/A"}
+---`).join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${txFields.length} treatment field(s):\n${formattedTxFields}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving treatment fields: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
+  "get-fields-treated-info",
+  "Get information about treated fields for a patient",
+  {
+    patientId: z.string().describe("Patient ID"),
+    courseId: z.string().describe("Course ID"),
+    treatmentStartDate: z.string().describe("Treatment start date (YYYY-MM-DD)"),
+    treatmentEndDate: z.string().describe("Treatment end date (YYYY-MM-DD)"),
+  },
+  async ({ patientId, courseId, treatmentStartDate, treatmentEndDate }: {
+    patientId: string;
+    courseId: string;
+    treatmentStartDate: string;
+    treatmentEndDate: string;
+  }) => {
+    try {
+      // Format request according to GetPatientFieldsTreatedInfoRequest
+      const requestData = formatAriaRequest("GetPatientFieldsTreatedInfoRequest", {
+        PatientId: patientId,
+        CourseId: courseId,
+        TreatmentStartDate: treatmentStartDate,
+        TreatmentEndDate: treatmentEndDate
+      });
+
+      const treatedInfo = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!treatedInfo || treatedInfo.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No treated field information found for this patient in the specified date range.",
+            },
+          ],
+        };
+      }
+
+      const formattedTreatedInfo = treatedInfo.map(info => `
+Field ID: ${info.fieldId || info.FieldId?.Value || "N/A"}
+Field Name: ${info.fieldName || info.FieldName?.Value || "N/A"}
+Treatment Date: ${info.treatmentDate || info.TreatmentDate?.Value || "N/A"}
+Fraction Number: ${info.fractionNumber || info.FractionNumber?.Value || "N/A"}
+Dose Delivered: ${info.doseDelivered || info.DoseDelivered?.Value || "N/A"} ${info.doseUnit || info.DoseUnit?.Value || ""}
+MU Delivered: ${info.muDelivered || info.MUDelivered?.Value || "N/A"}
+Status: ${info.status || info.Status?.Value || "N/A"}
+Machine: ${info.machineName || info.MachineName?.Value || "N/A"}
+Technologist: ${info.technologistName || info.TechnologistName?.Value || "N/A"}
+---`).join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${treatedInfo.length} treated field record(s):\n${formattedTreatedInfo}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving treated field information: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
+  "get-patient-ref-points",
+  "Get patient reference points",
+  {
+    patientId: z.string().describe("Patient ID"),
+  },
+  async ({ patientId }: {
+    patientId: string;
+  }) => {
+    try {
+      // Format request according to GetPatientRefPointsRequest
+      const requestData = formatAriaRequest("GetPatientRefPointsRequest", {
+        PatientId: patientId
+      });
+
+      const refPoints = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!refPoints || refPoints.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No reference points found for this patient.",
+            },
+          ],
+        };
+      }
+
+      const formattedRefPoints = refPoints.map(point => `
+Reference Point ID: ${point.refPointId || point.RefPointId?.Value || "N/A"}
+Reference Point Name: ${point.refPointName || point.RefPointName?.Value || "N/A"}
+X Coordinate: ${point.xCoordinate || point.XCoordinate?.Value || "N/A"}
+Y Coordinate: ${point.yCoordinate || point.YCoordinate?.Value || "N/A"}
+Z Coordinate: ${point.zCoordinate || point.ZCoordinate?.Value || "N/A"}
+Description: ${point.description || point.Description?.Value || "N/A"}
+---`).join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${refPoints.length} reference point(s):\n${formattedRefPoints}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving reference points: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
+  "get-clinical-concepts",
+  "Get patient clinical concepts",
+  {
+    patientId: z.string().describe("Patient ID"),
+    courseId: z.string().describe("Course ID"),
+    prescriptionId: z.string().optional().describe("Prescription ID"),
+  },
+  async ({ patientId, courseId, prescriptionId }: {
+    patientId: string;
+    courseId: string;
+    prescriptionId?: string;
+  }) => {
+    try {
+      // Format request according to GetPatientClinicalConceptsRequest
+      const requestData = formatAriaRequest("GetPatientClinicalConceptsRequest", {
+        PatientId: patientId,
+        CourseId: courseId,
+        PrescriptionId: prescriptionId || ""
+      });
+
+      const clinicalConcepts = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!clinicalConcepts || clinicalConcepts.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No clinical concepts found for this patient.",
+            },
+          ],
+        };
+      }
+
+      const formattedClinicalConcepts = clinicalConcepts.map(concept => `
+Concept ID: ${concept.conceptId || concept.ConceptId?.Value || "N/A"}
+Concept Name: ${concept.conceptName || concept.ConceptName?.Value || "N/A"}
+Concept Type: ${concept.conceptType || concept.ConceptType?.Value || "N/A"}
+Value: ${concept.value || concept.Value?.Value || "N/A"}
+Unit: ${concept.unit || concept.Unit?.Value || "N/A"}
+Description: ${concept.description || concept.Description?.Value || "N/A"}
+---`).join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${clinicalConcepts.length} clinical concept(s):\n${formattedClinicalConcepts}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving clinical concepts: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// RFID Vendor Connectivity tools
+server.tool(
+  "get-patient-name-for-id",
+  "Get patient name for a specific ID type",
+  {
+    id: z.string().describe("Patient ID (e.g., Social Insurance Number)"),
+    idType: z.string().describe("ID Type (e.g., Social Insurance Number)"),
+  },
+  async ({ id, idType }: {
+    id: string;
+    idType: string;
+  }) => {
+    try {
+      // Format request according to GetPatientNameForIDRequest
+      const requestData = formatAriaRequest("GetPatientNameForIDRequest", {
+        Id: id,
+        IdType: idType
+      });
+
+      const patientInfo = await makeAriaRequest<any>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!patientInfo) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No patient found for the provided ID.",
+            },
+          ],
+        };
+      }
+
+      const formattedPatientInfo = `
+Patient ID: ${patientInfo.patientId || patientInfo.PatientId?.Value || "N/A"}
+Patient Name: ${patientInfo.patientName || patientInfo.PatientName?.Value || "N/A"}
+ID Type: ${patientInfo.idType || patientInfo.IdType?.Value || "N/A"}
+ID Value: ${patientInfo.idValue || patientInfo.IdValue?.Value || "N/A"}
+---`;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Patient information:\n${formattedPatientInfo}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving patient name: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
+  "get-resource-details-for-id",
+  "Get resource details for a specific ID type",
+  {
+    id: z.string().describe("Resource ID"),
+    idType: z.string().describe("ID Type (e.g., RFID)"),
+  },
+  async ({ id, idType }: {
+    id: string;
+    idType: string;
+  }) => {
+    try {
+      // Format request according to GetResourceDetailsForIDRequest
+      const requestData = formatAriaRequest("GetResourceDetailsForIDRequest", {
+        Id: id,
+        IdType: idType
+      });
+
+      const resourceInfo = await makeAriaRequest<any>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!resourceInfo) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No resource found for the provided ID.",
+            },
+          ],
+        };
+      }
+
+      const formattedResourceInfo = `
+Resource ID: ${resourceInfo.resourceId || resourceInfo.ResourceId?.Value || "N/A"}
+Resource Name: ${resourceInfo.resourceName || resourceInfo.ResourceName?.Value || "N/A"}
+Resource Type: ${resourceInfo.resourceType || resourceInfo.ResourceType?.Value || "N/A"}
+ID Type: ${resourceInfo.idType || resourceInfo.IdType?.Value || "N/A"}
+Status: ${resourceInfo.status || resourceInfo.Status?.Value || "N/A"}
+---`;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Resource information:\n${formattedResourceInfo}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving resource details: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
+  "get-patient-appointments-for-id",
+  "Get patient appointments for a specific ID type",
+  {
+    id: z.string().describe("Patient ID"),
+    idType: z.string().describe("ID Type (e.g., Social Insurance Number)"),
+    startDateTime: z.string().describe("Start date and time (ISO format)"),
+    endDateTime: z.string().describe("End date and time (ISO format)"),
+    appointmentStatus: z.string().optional().describe("Appointment status (e.g., All)"),
+  },
+  async ({ id, idType, startDateTime, endDateTime, appointmentStatus }: {
+    id: string;
+    idType: string;
+    startDateTime: string;
+    endDateTime: string;
+    appointmentStatus?: string;
+  }) => {
+    try {
+      // Format request according to GetPatientAppointmentsForIDRequest
+      const requestData = formatAriaRequest("GetPatientAppointmentsForIDRequest", {
+        Id: id,
+        IdType: idType,
+        StartDateTime: startDateTime,
+        EndDateTime: endDateTime,
+        AppointmentStatus: appointmentStatus || "All"
+      });
+
+      const appointments = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!appointments || appointments.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No appointments found for this patient in the specified date range.",
+            },
+          ],
+        };
+      }
+
+      const formattedAppointments = appointments.map(appointment => `
+Appointment ID: ${appointment.appointmentId || appointment.AppointmentId?.Value || "N/A"}
+Date: ${appointment.appointmentDate || appointment.AppointmentDate?.Value || "N/A"}
+Time: ${appointment.startTime || appointment.StartTime?.Value || "N/A"} - ${appointment.endTime || appointment.EndTime?.Value || "N/A"}
+Type: ${appointment.appointmentType || appointment.AppointmentType?.Value || "N/A"}
+Status: ${appointment.status || appointment.Status?.Value || "N/A"}
+Resource: ${appointment.resourceName || appointment.ResourceName?.Value || "N/A"}
+Provider: ${appointment.providerName || appointment.ProviderName?.Value || "N/A"}
+---`).join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${appointments.length} appointment(s):\n${formattedAppointments}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving appointments: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// Helper Services tools
+server.tool(
+  "get-diagnosis-lookup-list",
+  "Get diagnosis lookup list",
+  {
+    lookupType: z.string().describe("Lookup type (e.g., DIAGNOSIS_METHOD)"),
+    lookupLanguage: z.string().optional().describe("Lookup language (e.g., ENU)"),
+  },
+  async ({ lookupType, lookupLanguage }: {
+    lookupType: string;
+    lookupLanguage?: string;
+  }) => {
+    try {
+      // Format request according to GetDiagnosisLookUpListRequest
+      const requestData = formatAriaRequest("GetDiagnosisLookUpListRequest", {
+        LookUpType: lookupType,
+        LookUpLanguage: lookupLanguage || "ENU"
+      });
+
+      const lookupList = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!lookupList || lookupList.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No lookup items found for the specified type.",
+            },
+          ],
+        };
+      }
+
+      const formattedLookupList = lookupList.map(item => `
+Lookup ID: ${item.lookupId || item.LookupId?.Value || "N/A"}
+Lookup Name: ${item.lookupName || item.LookupName?.Value || "N/A"}
+Lookup Type: ${item.lookupType || item.LookupType?.Value || "N/A"}
+Description: ${item.description || item.Description?.Value || "N/A"}
+---`).join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${lookupList.length} lookup item(s):\n${formattedLookupList}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving diagnosis lookup list: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
+  "get-lookup-list",
+  "Get general lookup list",
+  {
+    lookupType: z.string().describe("Lookup type (e.g., MARITAL_STATUS)"),
+    lookupLanguage: z.string().optional().describe("Lookup language (e.g., ENU)"),
+  },
+  async ({ lookupType, lookupLanguage }: {
+    lookupType: string;
+    lookupLanguage?: string;
+  }) => {
+    try {
+      // Format request according to GetLookUpListRequest
+      const requestData = formatAriaRequest("GetLookUpListRequest", {
+        LookUpType: lookupType,
+        LookUpLanguage: lookupLanguage || "ENU"
+      });
+
+      const lookupList = await makeAriaRequest<any[]>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (!lookupList || lookupList.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No lookup items found for the specified type.",
+            },
+          ],
+        };
+      }
+
+      const formattedLookupList = lookupList.map(item => `
+Lookup ID: ${item.lookupId || item.LookupId?.Value || "N/A"}
+Lookup Name: ${item.lookupName || item.LookupName?.Value || "N/A"}
+Lookup Type: ${item.lookupType || item.LookupType?.Value || "N/A"}
+Description: ${item.description || item.Description?.Value || "N/A"}
+---`).join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${lookupList.length} lookup item(s):\n${formattedLookupList}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error retrieving lookup list: ${error instanceof Error ? error.message : "Unknown error"}`,
           },
         ],
       };
