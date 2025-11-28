@@ -127,6 +127,7 @@ The MCP server provides the following tools:
 - `create-doctor` - Create a new doctor in ARIA
 - `get-doctor-info` - Get doctor information
 - `assign-doctor-to-patient` - Assign a doctor to a patient
+- `update-doctor-assigned-to-patient` - Update an existing doctor assignment for a patient
 - `get-doctors-assigned-to-patient` - Get doctors assigned to a patient
 - `get-machine-list` - Get list of available machines
 
@@ -178,6 +179,7 @@ The server communicates with the following ARIA Access API endpoints:
 - `CreateDoctorRequest` - Create new doctor
 - `GetDoctorsInfoRequest` - Get doctor information
 - `AssignDoctorToPatientRequest` - Assign doctor to patient
+- `UpdateDoctorAssignedToPatientRequest` - Update doctor assignment for patient
 - `GetDoctorsAssignedToPatientRequest` - Get doctors assigned to patient
 - `GetMachineListRequest` - Get machine list
 

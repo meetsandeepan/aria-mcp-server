@@ -877,6 +877,78 @@ server.tool(
   },
 );
 
+// Update Doctor Assigned to Patient tool
+server.tool(
+  "update-doctor-assigned-to-patient",
+  "Update an assigned doctor for a patient in ARIA",
+  {
+    patientId: z.string().describe("Patient ID"),
+    doctorId: z.string().describe("Doctor ID"),
+    isOncologist: z.boolean().describe("Is oncologist"),
+    isPrimary: z.boolean().describe("Is primary doctor"),
+    comment: z.string().optional().describe("Comment"),
+    timeStamp: z.string().optional().describe("Timestamp for concurrency check"),
+    isTimeStampCheckRequired: z.boolean().optional().describe("Is timestamp check required (default: false)"),
+    areaName: z.string().optional().describe("Area name for tracking purposes"),
+  },
+  async ({ patientId, doctorId, isOncologist, isPrimary, comment, timeStamp, isTimeStampCheckRequired, areaName }: {
+    patientId: string;
+    doctorId: string;
+    isOncologist: boolean;
+    isPrimary: boolean;
+    comment?: string;
+    timeStamp?: string;
+    isTimeStampCheckRequired?: boolean;
+    areaName?: string;
+  }) => {
+    try {
+      // Format request according to UpdateDoctorAssignedToPatientRequest
+      const requestData = formatAriaRequest("UpdateDoctorAssignedToPatientRequest", {
+        PatientId: patientId,
+        DoctorId: doctorId,
+        IsOncologist: isOncologist,
+        IsPrimary: isPrimary,
+        Comment: comment || "",
+        TimeStamp: timeStamp || null,
+        IsTimeStampCheckRequired: isTimeStampCheckRequired !== undefined ? isTimeStampCheckRequired : false,
+        AreaName: areaName || "AWC:UpdateDoctorToPatient",
+        Attributes: null
+      });
+
+      const result = await makeAriaRequest<any>("/Gateway/Service.svc/rest/Process", requestData);
+      
+      if (result && result.success !== false) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Doctor assignment updated successfully!\nPatient ID: ${patientId}\nDoctor ID: ${doctorId}\nIs Oncologist: ${isOncologist ? "Yes" : "No"}\nIs Primary: ${isPrimary ? "Yes" : "No"}`,
+            },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Failed to update doctor assignment: ${result?.errorMessage || "Unknown error"}`,
+            },
+          ],
+        };
+      }
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error updating doctor assignment: ${error instanceof Error ? error.message : "Unknown error"}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
 // Get Doctors Assigned to Patient tool
 server.tool(
   "get-doctors-assigned-to-patient",
